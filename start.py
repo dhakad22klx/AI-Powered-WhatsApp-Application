@@ -4,20 +4,21 @@ import requests
 from fastapi import FastAPI, Request, Response, Query
 from dotenv import load_dotenv
 from pyngrok import ngrok
-
-# Load environment variables from .env file
-load_dotenv()
-
-app = FastAPI()
+from chat_history import WhatsAppMemory
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-# Optional: Get ngrok auth token from .env for a seamless setup
 NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN") 
-
 API_URL = f"https://graph.facebook.com/v24.0/{PHONE_NUMBER_ID}/messages"
+
+# Load environment variables from .env file
+load_dotenv()
+app = FastAPI()
+
+# Initialize the memory module
+memory = WhatsAppMemory()
 
 @app.get("/webhook")
 async def verify_webhook(
@@ -26,7 +27,6 @@ async def verify_webhook(
     hub_challenge: str = Query(None, alias="hub.challenge")
 ):
     """Initial verification for Meta to trust your server."""
-    print("WEBHOOK_VERIFIED")
     if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
         print("WEBHOOK_VERIFIED")
         return Response(content=hub_challenge, media_type="text/plain")
@@ -50,13 +50,14 @@ async def receive_message(request: Request):
             # Extract sender's profile name
             sender_name = entry['contacts'][0]['profile']['name'] if 'contacts' in entry else "World"
 
-            # if "hi" in text_body:
-            #     # REPLACED fixed number with sender_phone
-            #     send_whatsapp_message(sender_phone, f"Hello {sender_name}!")
-            send_whatsapp_message(sender_phone, f"""
-                                  Hello {sender_name}!, You sent this message below : 
-                                  \n 
-                                  {text_body}""")
+            #GetContext 
+            previous_relevant_messages = memory.get_context(sender_phone,text_body)
+
+
+            send_whatsapp_message(sender_phone, f"""Hello {sender_name}!, You sent this message:   {text_body}
+            And context : {previous_relevant_messages}""")
+            
+            memory.save_message(sender_phone, text_body)
 
     except (KeyError, IndexError):
         pass
@@ -87,10 +88,10 @@ if __name__ == "__main__":
     
     # Open a tunnel on the specified port
     public_url = ngrok.connect(PORT).public_url
-    print(f"\n🚀 WhatsApp Bot is Live!")
-    print(f"🔗 Public URL: {public_url}")
-    print(f"👉 Meta Webhook URL: {public_url}/webhook")
-    print(f"🔑 Verify Token: {VERIFY_TOKEN}\n")
+    print(f"\n WhatsApp Bot is Live!")
+    print(f" Public URL: {public_url}")
+    print(f" Meta Webhook URL: {public_url}/webhook")
+    print(f"Verify Token: {VERIFY_TOKEN}\n")
 
     # Run the FastAPI app
     uvicorn.run(app, host="0.0.0.0", port=PORT)
