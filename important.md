@@ -17,3 +17,7 @@ curl -X POST "[https://graph.facebook.com/v21.0/YOUR_WABA_ID/subscribed_apps](ht
 
 https://developers.facebook.com/documentation/business-messaging/whatsapp/reference/whatsapp-business-account/subscribed-apps-api
 
+
+https://developers.facebook.com/blog/post/2022/10/24/sending-messages-with-whatsapp-in-your-python-applications/
+
+Group Related Video : https://www.youtube.com/watch?v=fah5B4vnZq8
