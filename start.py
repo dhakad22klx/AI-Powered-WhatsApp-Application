@@ -54,7 +54,7 @@ async def receive_message(request: Request):
             #     # REPLACED fixed number with sender_phone
             #     send_whatsapp_message(sender_phone, f"Hello {sender_name}!")
             send_whatsapp_message(sender_phone, f"""
-                                  Hello {sender_name}!, You sent this message below : 
+                                  Hello {sender_name}!, You sent this message below: 
                                   \n 
                                   {text_body}""")
 
