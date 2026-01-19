@@ -46,17 +46,24 @@ async def receive_message(request: Request):
             message = entry['messages'][0]
             sender_phone = message['from']
             text_body = message['text']['body'].lower()
+            incoming_msg_id = message['id']  # <--- Capture this ID
 
             # Extract sender's profile name
             sender_name = entry['contacts'][0]['profile']['name'] if 'contacts' in entry else "World"
 
-            #GetContext 
-            previous_relevant_messages = memory.get_context(sender_phone,text_body)
+            USE_CONTEXT = False  # <-- change to False to disable context
 
+            previous_relevant_messages = None
+            if USE_CONTEXT:
+                # GetContext
+                previous_relevant_messages = memory.get_context(sender_phone, text_body)
 
-            send_whatsapp_message(sender_phone, f"""Hello {sender_name}!, You sent this message:   {text_body}
-            And context : {previous_relevant_messages}""")
-            
+            msg_body = f"Hello {sender_name}!, You sent this message: {text_body}."
+
+            if previous_relevant_messages:
+                msg_body += f"\nAnd context: {previous_relevant_messages}"
+
+            send_whatsapp_message(sender_phone, msg_body, incoming_msg_id)
             memory.save_message(sender_phone, text_body)
 
     except (KeyError, IndexError):
@@ -64,7 +71,7 @@ async def receive_message(request: Request):
 
     return {"status": "success"}
 
-def send_whatsapp_message(to_number, text):
+def send_whatsapp_message(to_number, text, reply_to_id=""):
     """Sends a text message using the WhatsApp Cloud API."""
     headers = {
         "Authorization": f"Bearer {TOKEN}",
@@ -76,6 +83,11 @@ def send_whatsapp_message(to_number, text):
         "type": "text",
         "text": {"body": text}
     }
+
+
+    # Add the context object if we want to reply to a specific message
+    if reply_to_id!="":
+        payload["context"] = {"message_id": reply_to_id}
     response = requests.post(API_URL, headers=headers, json=payload)
     return response.json()
 
