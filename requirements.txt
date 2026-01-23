@@ -5,3 +5,5 @@ fastapi
 uvicorn
 pyngrok
 pinecone
+pillow 
+httpx
