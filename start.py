@@ -1,109 +1,166 @@
 import os
+import httpx
 import uvicorn
-import requests
-from fastapi import FastAPI, Request, Response, Query
+from io import BytesIO
+from PIL import Image, ImageOps
+from fastapi import FastAPI, Request, Response, Query, BackgroundTasks
 from dotenv import load_dotenv
 from pyngrok import ngrok
 from chat_history import WhatsAppMemory
+
+load_dotenv()
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN") 
-API_URL = f"https://graph.facebook.com/v24.0/{PHONE_NUMBER_ID}/messages"
+API_VERSION = os.getenv("API_VERSION", "v21.0")
+BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
 
-# Load environment variables from .env file
-load_dotenv()
 app = FastAPI()
-
-# Initialize the memory module
 memory = WhatsAppMemory()
 
+# Create a global async client for better performance
+client = httpx.AsyncClient()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await client.aclose()
+
+# --- WEBHOOK VERIFICATION ---
 @app.get("/webhook")
 async def verify_webhook(
     hub_mode: str = Query(None, alias="hub.mode"),
     hub_verify_token: str = Query(None, alias="hub.verify_token"),
     hub_challenge: str = Query(None, alias="hub.challenge")
 ):
-    """Initial verification for Meta to trust your server."""
     if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
-        print("WEBHOOK_VERIFIED")
         return Response(content=hub_challenge, media_type="text/plain")
     return Response(content="Verification failed", status_code=403)
 
+# --- MAIN WEBHOOK RECEIVER ---
 @app.post("/webhook")
-async def receive_message(request: Request):
-    """Processes incoming messages and sends a reply."""
+async def receive_message(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     
-    # Helpful for debugging: print the incoming JSON to your Ubuntu terminal
-    print(f"Incoming data: {data}") 
-
     try:
-        entry = data['entry'][0]['changes'][0]['value']
-        if 'messages' in entry:
-            message = entry['messages'][0]
+        value = data['entry'][0]['changes'][0]['value']
+        if 'messages' in value:
+            message = value['messages'][0]
             sender_phone = message['from']
-            text_body = message['text']['body'].lower()
-            incoming_msg_id = message['id']  # <--- Capture this ID
+            incoming_msg_id = message['id']
+            msg_type = message.get('type')
 
-            # Extract sender's profile name
-            sender_name = entry['contacts'][0]['profile']['name'] if 'contacts' in entry else "World"
+            # 1. HANDLE TEXT
+            if msg_type == 'text':
+                text_body = message['text']['body'].lower()
+                # Extract sender's profile name
+                print("")
+                sender_name = value['contacts'][0]['profile']['name'] if 'contacts' in value else "World"
+                background_tasks.add_task(handle_text_chat, sender_phone,sender_name, text_body, incoming_msg_id)
 
-            USE_CONTEXT = False  # <-- change to False to disable context
+            # 2. HANDLE STICKER COMMAND (/s on an image)
+            elif msg_type == 'image':
+                caption = message['image'].get('caption', "").lower()
+                print("Received image")
+                if "/s" in caption:
+                    # Simple parser: /s PackName | PublisherName
+                    parts = caption.replace("/s", "").strip().split("|")
+                    
+                    pack_name = parts[0].strip() if len(parts) > 0 and parts[0] else "Creater"
+                    publisher = parts[1].strip() if len(parts) > 1 else "Deepak Dhakad"
 
-            previous_relevant_messages = None
-            if USE_CONTEXT:
-                # GetContext
-                previous_relevant_messages = memory.get_context(sender_phone, text_body)
-
-            msg_body = f"Hello {sender_name}!, You sent this message: {text_body}."
-
-            if previous_relevant_messages:
-                msg_body += f"\nAnd context: {previous_relevant_messages}"
-
-            send_whatsapp_message(sender_phone, msg_body, incoming_msg_id)
-            memory.save_message(sender_phone, text_body)
+                    media_id = message['image']['id']
+                    background_tasks.add_task(handle_sticker_request, sender_phone, media_id, pack_name, publisher)
 
     except (KeyError, IndexError):
         pass
 
     return {"status": "success"}
 
-def send_whatsapp_message(to_number, text, reply_to_id=""):
-    """Sends a text message using the WhatsApp Cloud API."""
-    headers = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Content-Type": "application/json"
-    }
+# --- BACKGROUND LOGIC ---
+
+async def handle_text_chat(phone, text, sender_name, msg_id):
+    """Processes Text and sends text reply."""
+    # Optional: Get context from memory
+    USE_CONTEXT = False  # <-- change to False to disable context
+    context = memory.get_context(phone, text)
+    reply_text = f"Got it, {sender_name}!. You said: {text}"
+    if USE_CONTEXT:
+        context = memory.get_context(phone, text)
+        reply_text += f"\n(Relevant Informatoin found in chat in history: {context})"
+    
+    await send_whatsapp_message(phone, reply_text, reply_to_id=msg_id)
+    memory.save_message(phone, text)
+
+async def handle_sticker_request(phone, media_id, pack_name = "Creater", publisher="Deepak Dhakad"):
+    """Processes image to sticker transformation."""
+    try:
+        # A. Get Download URL
+        media_info_url = f"{BASE_URL}/{media_id}"
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        resp = await client.get(media_info_url, headers=headers)
+        download_url = resp.json().get("url")
+
+        print(f"Received Download URL : {download_url}")
+        # B. Download & Process Image
+        img_resp = await client.get(download_url, headers=headers)
+        img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
+
+        print(f"Processed Image")
+        # Resize/Pad to exactly 512x512 transparent WebP - Sticker Canva
+        img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        sticker = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+        sticker.paste(img, ((512 - img.width) // 2, (512 - img.height) // 2))
+
+        webp_io = BytesIO()
+        sticker.save(webp_io, format="WEBP")
+        webp_data = webp_io.getvalue()
+
+        # C. Upload Sticker to Meta
+        upload_url = f"{BASE_URL}/{PHONE_NUMBER_ID}/media"
+        files = {
+            "file": ("sticker.webp", webp_data, "image/webp"),
+            "messaging_product": (None, "whatsapp"),
+        }
+        upload_resp = await client.post(upload_url, headers=headers, files=files)
+        new_media_id = upload_resp.json().get("id")
+
+        print("Uploaded sticker to meta")
+        # D. Send Sticker
+        await client.post(
+            f"{BASE_URL}/{PHONE_NUMBER_ID}/messages",
+            headers=headers,
+            json={
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "sticker",
+                "sticker": {"id": new_media_id}
+            }
+        )
+
+        print("Sent requested sticker")
+    except Exception as e:
+        print(f"Sticker Error: {e}")
+
+async def send_whatsapp_message(to_number, text, reply_to_id=""):
+    """Async text sender."""
+    headers = {"Authorization": f"Bearer {TOKEN}"}
     payload = {
         "messaging_product": "whatsapp",
-        "to": to_number,  # Dynamically use the sender's number
+        "to": to_number,
         "type": "text",
         "text": {"body": text}
     }
-
-
-    # Add the context object if we want to reply to a specific message
-    if reply_to_id!="":
+    if reply_to_id:
         payload["context"] = {"message_id": reply_to_id}
-    response = requests.post(API_URL, headers=headers, json=payload)
-    return response.json()
+    
+    await client.post(f"{BASE_URL}/{PHONE_NUMBER_ID}/messages", headers=headers, json=payload)
 
 if __name__ == "__main__":
-    # --- NGROK SETUP ---
     PORT = 8000
-    
-    if NGROK_AUTH_TOKEN:
-        ngrok.set_auth_token(NGROK_AUTH_TOKEN)
-    
-    # Open a tunnel on the specified port
+    if os.getenv("NGROK_AUTH_TOKEN"):
+        ngrok.set_auth_token(os.getenv("NGROK_AUTH_TOKEN"))
     public_url = ngrok.connect(PORT).public_url
-    print(f"\n WhatsApp Bot is Live!")
-    print(f" Public URL: {public_url}")
-    print(f" Meta Webhook URL: {public_url}/webhook")
-    print(f"Verify Token: {VERIFY_TOKEN}\n")
-
-    # Run the FastAPI app
+    print(f"Webhook URL: {public_url}/webhook")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
