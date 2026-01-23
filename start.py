@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, Response, Query, BackgroundTasks
 from dotenv import load_dotenv
 from pyngrok import ngrok
 from chat_history import WhatsAppMemory
+from utility_functions.add_metadata import inject_whatsapp_xmp_local
 
 load_dotenv()
 
@@ -55,9 +56,8 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
             if msg_type == 'text':
                 text_body = message['text']['body'].lower()
                 # Extract sender's profile name
-                print("")
                 sender_name = value['contacts'][0]['profile']['name'] if 'contacts' in value else "World"
-                background_tasks.add_task(handle_text_chat, sender_phone,sender_name, text_body, incoming_msg_id)
+                background_tasks.add_task(handle_text_chat, sender_phone, text_body, sender_name, incoming_msg_id)
 
             # 2. HANDLE STICKER COMMAND (/s on an image)
             elif msg_type == 'image':
@@ -84,7 +84,7 @@ async def handle_text_chat(phone, text, sender_name, msg_id):
     """Processes Text and sends text reply."""
     # Optional: Get context from memory
     USE_CONTEXT = False  # <-- change to False to disable context
-    context = memory.get_context(phone, text)
+    
     reply_text = f"Got it, {sender_name}!. You said: {text}"
     if USE_CONTEXT:
         context = memory.get_context(phone, text)
@@ -108,7 +108,7 @@ async def handle_sticker_request(phone, media_id, pack_name = "Creater", publish
         img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
 
         print(f"Processed Image")
-        # Resize/Pad to exactly 512x512 transparent WebP - Sticker Canva
+        # B1 Resize/Pad to exactly 512x512 transparent WebP - Sticker Canva
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
         sticker = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
         sticker.paste(img, ((512 - img.width) // 2, (512 - img.height) // 2))
@@ -117,10 +117,13 @@ async def handle_sticker_request(phone, media_id, pack_name = "Creater", publish
         sticker.save(webp_io, format="WEBP")
         webp_data = webp_io.getvalue()
 
+        #B2: Adding meta data - Comment this part if meta data is not requierd.
+        final_webp_data = inject_whatsapp_xmp_local(webp_data, pack_name, publisher)
+
         # C. Upload Sticker to Meta
         upload_url = f"{BASE_URL}/{PHONE_NUMBER_ID}/media"
         files = {
-            "file": ("sticker.webp", webp_data, "image/webp"),
+            "file": ("sticker.webp", final_webp_data, "image/webp"),
             "messaging_product": (None, "whatsapp"),
         }
         upload_resp = await client.post(upload_url, headers=headers, files=files)
