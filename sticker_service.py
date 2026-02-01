@@ -7,6 +7,8 @@ from io import BytesIO
 WHATSAPP_TOKEN = os.getenv("TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 API_VERSION = os.getenv("API_VERSION")
+
+
 class StickerService:
     @staticmethod
     async def get_media_url(media_id: str):
