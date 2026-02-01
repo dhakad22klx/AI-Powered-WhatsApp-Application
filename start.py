@@ -65,7 +65,6 @@ async def receive_message(
 ):
     
     data = await request.json()
-    print("data : ", data)
 
     try:
         value = data['entry'][0]['changes'][0]['value']
@@ -231,20 +230,12 @@ async def send_whatsapp_message(
     )
 
 
-# if __name__ == "__main__":
-#     PORT = 8000
-
-#     if os.getenv("NGROK_AUTH_TOKEN"):
-#         ngrok.set_auth_token(os.getenv("NGROK_AUTH_TOKEN"))
-
-#     public_url = ngrok.connect(PORT).public_url
-#     print(f"Webhook URL: {public_url}/webhook")
-#     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
 if __name__ == "__main__":
-    uvicorn.run(
-        "start:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+    PORT = 8000
+
+    if os.getenv("NGROK_AUTH_TOKEN"):
+        ngrok.set_auth_token(os.getenv("NGROK_AUTH_TOKEN"))
+
+    public_url = ngrok.connect(PORT).public_url
+    print(f"Webhook URL: {public_url}/webhook")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
