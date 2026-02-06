@@ -16,7 +16,7 @@ from fastapi import (
 from pyngrok import ngrok
 from PIL import Image
 
-from chat_history import WhatsAppMemory
+from graph import MusicRecommendationGraph
 
 
 # --- CONFIGURATION ---
@@ -41,7 +41,6 @@ def get_http_client(request: Request) -> httpx.AsyncClient:
     return request.app.state.http_client
 
 app = FastAPI(lifespan=lifespan)
-memory = WhatsAppMemory()
 
 
 # --- WEBHOOK VERIFICATION ---
@@ -116,31 +115,41 @@ async def receive_message(
 
     return {"status": "success"}
 
-# --- BACKGROUND LOGIC ---
 
 async def handle_text_chat(
-    client : httpx.AsyncClient,
-    phone,
-    sender_name,
-    text,
-    msg_id
+    client: httpx.AsyncClient,
+    phone: str,
+    sender_name: str,
+    text: str,
+    msg_id: str
 ):
-    """Processes Text and sends text reply."""
-    # Optional: Get context from memory
-    USE_CONTEXT = True  # <-- change to False to disable context
-    context = memory.get_context(phone, text)
-    reply_text = f"Got it, {sender_name}!. You said: {text}"
-    if USE_CONTEXT:
-        context = memory.get_context(phone, text)
-        reply_text += f"\n(Relevant Informatoin found in chat in history: {context})"
-    
-    await send_whatsapp_message(
-        client=client,
-        to_number=phone,
-        text=reply_text,
-        reply_to_id=msg_id
-    )
-    memory.save_message(phone, text)
+    music_graph = MusicRecommendationGraph()
+    """Processes text using LangGraph music assistant and replies."""
+    try:
+        # Run LangGraph (AI brain)
+        reply_text = await music_graph.run(
+            phone=phone,
+            text=text
+        )
+        
+        reply_text = f"{sender_name}! {reply_text}"
+        # Send ONLY the AI response
+        await send_whatsapp_message(
+            client=client,
+            to_number=phone,
+            text=reply_text,
+            reply_to_id=msg_id
+        )
+
+    except Exception as e:
+        # Safe fallback (never expose internals)
+        await send_whatsapp_message(
+            client=client,
+            to_number=phone,
+            text=f"{sender_name}! Something went wrong 😅 Please try again.",
+            reply_to_id=msg_id
+        )
+        print(f"[handle_text_chat error]: {e}")
 
 
 async def handle_sticker_request(
