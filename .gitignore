@@ -1,4 +1,8 @@
 .venv/
 .env
 __pycache__/
+.python-version
+uv.lock
+pyproject.toml
+
 docker.env
